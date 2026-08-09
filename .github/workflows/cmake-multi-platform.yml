@@ -1,19 +1,19 @@
-name: Build RemoteCtl Linux App Client
+name: Build RemoteCtl App Linux Client
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build-linux-client:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -21,21 +21,22 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Build Linux ${{ matrix.arch }} Client
+      - name: Build Linux client app/${{ matrix.arch }}
         run: |
           cd app
-          mkdir -p ../output
+          go mod tidy
+          mkdir -p ../dist
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
           go build -ldflags="-s -w" \
-          -o ../output/remotectl-client-linux-${{ matrix.arch }} main.go
+          -o ../dist/remotectl-client-linux-${{ matrix.arch }} main.go
 
       - name: Strip binary
         run: |
-          cd output
+          cd dist
           strip remotectl-client-linux-${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: remotectl-linux-client-${{ matrix.arch }}
-          path: output/remotectl-client-linux-${{ matrix.arch }}
+          path: dist/remotectl-client-linux-${{ matrix.arch }}
