@@ -10,11 +10,11 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  build-linux:
-    name: Build Linux artifacts (server, agent, flutter linux)
+  # Build server binaries (uses Makefile / module-aware builds)
+  build-binaries:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -23,62 +23,148 @@ jobs:
           go-version: '1.23'
           cache: true
 
-      - name: Prepare output dir
+      - name: Prepare output dirs
         run: |
           set -e
           mkdir -p build_output
+          mkdir -p deploy/bin
 
-      - name: Build server linux/amd64
+      - name: Build server (multi-arch) using server module
         run: |
           set -e
+          # Build server in its module directory so go sees server/go.mod
           cd server
-          echo "Building server linux/amd64"
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-server-linux-amd64 .
+          # linux amd64
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-server-linux-amd64 .
+          # linux arm64
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-server-linux-arm64 .
+          # windows amd64
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-server-windows-amd64.exe .
+          # darwin (pure-Go; if server depends on cgo, construct on mac runner instead)
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-server-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-server-darwin-arm64 .
+          cd ..
 
-      - name: Build server linux/arm64
+      - name: Build agent (Linux headless) - module-aware
         run: |
           set -e
-          cd server
-          echo "Building server linux/arm64"
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-server-linux-arm64 .
-
-      - name: Build agent linux/amd64
-        run: |
-          set -e
+          # Agent has its own go.mod at agent/go.mod; attempt Linux builds here.
+          # Note: agent may require CGO and native libs for full functionality.
           cd agent
-          echo "Building agent linux/amd64"
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-agent-linux-amd64 .
+          # linux amd64 (try CGO_ENABLED=0 first; if agent requires CGO, build on appropriate runner)
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-agent-linux-amd64 .
+          # linux arm64
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o ../build_output/remotectl-agent-linux-arm64 .
+          cd ..
 
-      - name: Install Flutter (for Linux app) and dependencies
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: stable
-
-      - name: Install linux desktop deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev liblzma-dev libatk1.0-dev libcairo2-dev libgdk-pixbuf2.0-dev libglu1-mesa-dev
-
-      - name: Build Flutter Linux desktop (app)
-        working-directory: app
+      - name: Ensure expected files exist (fail-fast)
         run: |
           set -e
-          flutter pub get
-          flutter build linux --release
-          # Flutter outputs Linux bundle at: build/linux/x64/release/bundle
-          mkdir -p ../build_output/app_linux_bundle
-          cp -r build/linux/x64/release/bundle/* ../build_output/app_linux_bundle/
+          ls -l build_output || true
+          test -f build_output/remotectl-server-linux-amd64 || (echo "server linux amd64 missing" && exit 1)
+          test -f build_output/remotectl-server-linux-arm64 || (echo "server linux arm64 missing" && exit 1)
+          test -f build_output/remotectl-agent-linux-amd64 || echo "warning: agent linux amd64 missing; if agent requires CGO build it on Linux runner"
 
-      - name: Package Linux App and artifacts
+      # Packaging steps can remain the same as before (zip/tar/generate checksums)
+      - name: Package server archives
+        run: |
+          set -e
+          VER="${VERSION}"
+          if [ -z "$VER" ]; then VER="dev"; fi
+          cd build_output
+          # server tarballs (include minimal install script and server.yaml.example if present)
+          mkdir -p tmp_server_amd64
+          cp remotectl-server-linux-amd64 tmp_server_amd64/remotectl-server
+          printf '%s\n' '#!/bin/bash' 'set -e' 'PREFIX=/opt/remotectl' 'mkdir -p "$PREFIX"' 'cp remotectl-server ./' > tmp_server_amd64/install.sh
+          if [ -f ../server/server.yaml.example ]; then
+            cp ../server/server.yaml.example tmp_server_amd64/server.yaml.example
+          else
+            printf '%s\n' '# server.yaml example' 'addr: ":443"' 'turn: {}' > tmp_server_amd64/server.yaml.example
+          fi
+          tar -czf "remotectl-server-linux-amd64-${VER}.tar.gz" -C tmp_server_amd64 .
+          rm -rf tmp_server_amd64
+
+          mkdir -p tmp_server_arm64
+          cp remotectl-server-linux-arm64 tmp_server_arm64/remotectl-server
+          cp ../build_output/remotectl-server-linux-arm64 tmp_server_arm64/remotectl-server || true
+          printf '%s\n' '#!/bin/bash' 'set -e' 'PREFIX=/opt/remotectl' 'mkdir -p "$PREFIX"' 'cp remotectl-server ./' > tmp_server_arm64/install.sh
+          if [ -f ../server/server.yaml.example ]; then
+            cp ../server/server.yaml.example tmp_server_arm64/server.yaml.example
+          else
+            printf '%s\n' '# server.yaml example' 'addr: ":443"' 'turn: {}' > tmp_server_arm64/server.yaml.example
+          fi
+          tar -czf "remotectl-server-linux-arm64-${VER}.tar.gz" -C tmp_server_arm64 .
+          rm -rf tmp_server_arm64
+
+      - name: Generate SHA256 checksums
         run: |
           set -e
           cd build_output
           VER="${VERSION}"
           if [ -z "$VER" ]; then VER="dev"; fi
+          sha256sum *.tar.gz > sha256sums.txt || true
 
-          # Package Linux desktop app (tar.gz)
-          if [ -d app_linux_bundle ]; then
-            tar -czf "remotectl-app-linux-amd64-${VER}.tar.gz" -C app_linux_bundle .
-            rm -rf app_linux_bundle
-          else
-            echo "Warning:
+      - name: Upload release assets (server + checksums)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build_output/remotectl-server-linux-amd64-${{ env.VERSION }}.tar.gz
+            build_output/remotectl-server-linux-arm64-${{ env.VERSION }}.tar.gz
+            build_output/sha256sums.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build Flutter Linux app (separate job so Flutter installation is isolated)
+  build-flutter-linux:
+    runs-on: ubuntu-latest
+    # If you want the artifact uploaded to the same Release, you can either have this job call the Releases API
+    # or upload artifacts and then have a final job aggregate them. Here we just build and upload to the release.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop deps
+        run: |
+          sudo apt-get update
+          # Common GTK and Vulkan / OpenGL deps required by Flutter Linux desktop builds
+          sudo apt-get install -y libgtk-3-dev liblzma-dev libgl1-mesa-dev libglu1-mesa-dev
+
+      - name: Setup Flutter (explicit version)
+        uses: subosito/flutter-action@v2
+        with:
+          # Specify explicit version or channel to avoid "unable to determine" errors.
+          # Replace '3.10.5' with your desired Flutter SDK version if necessary.
+          flutter-version: "3.10.5"
+          channel: "stable"
+
+      - name: Verify flutter
+        run: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Build Linux Flutter app (release)
+        run: |
+          set -e
+          cd app
+          # If the app expects the agent binary next to Flutter binary, copy it in
+          # Using the agent built in build-binaries job would require artifacts sharing.
+          # Here we build the Flutter app; if you need agent injection, consider using artifacts or combine jobs.
+          flutter build linux --release
+
+      - name: Package Flutter linux bundle
+        run: |
+          set -e
+          VER="${VERSION}"
+          if [ -z "$VER" ]; then VER="dev"; fi
+          cd app/build/linux/x64/release
+          tar -czf "../../../build_output/remotectl-flutter-linux-${VER}.tar.gz" bundle || true
+          ls -lah "../../../build_output" || true
+
+      - name: Upload Flutter release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build_output/remotectl-flutter-linux-${{ env.VERSION }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
