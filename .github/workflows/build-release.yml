@@ -1,5 +1,6 @@
 name: Build and Package RemoteCtl Releases
-permissions: contents: write
+permissions: 
+  contents: write
 on:
   push:
     tags:
