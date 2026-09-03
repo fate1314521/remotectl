@@ -10,10 +10,11 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  build-and-package:
+  build-linux:
+    name: Build Linux artifacts (server, agent, flutter linux)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -22,136 +23,62 @@ jobs:
           go-version: '1.23'
           cache: true
 
-      - name: Prepare output dirs
+      - name: Prepare output dir
         run: |
           set -e
           mkdir -p build_output
 
-      - name: Cross compile all platforms (pure Go targets)
+      - name: Build server linux/amd64
         run: |
           set -e
-          cd "${GITHUB_WORKSPACE}"
-          mkdir -p build_output
+          cd server
+          echo "Building server linux/amd64"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-server-linux-amd64 .
 
-          # NOTE: CGO_ENABLED=0 for pure-Go cross compile.
-          # If your project requires CGO (e.g. calls into VideoToolbox or other native libs),
-          # build on the corresponding platform runner instead (macos-latest / windows-latest).
-          echo "Building windows/amd64"
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o build_output/remotectl-windows-amd64.exe main.go
-
-          echo "Building darwin/amd64"
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o build_output/remotectl-darwin-amd64 main.go
-
-          echo "Building darwin/arm64"
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o build_output/remotectl-darwin-arm64 main.go
-
-          echo "Building linux/amd64"
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o build_output/remotectl-linux-amd64 main.go
-
-          echo "Building linux/arm64"
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-s -w" -o build_output/remotectl-linux-arm64 main.go
-
-      - name: Create release archives matching README naming
+      - name: Build server linux/arm64
         run: |
           set -e
-          cd build_output
+          cd server
+          echo "Building server linux/arm64"
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-server-linux-arm64 .
 
-          VER="${VERSION}"
-          if [ -z "$VER" ]; then
-            VER="dev"
-          fi
-
-          test -f remotectl-windows-amd64.exe || (echo "missing windows exe" && exit 1)
-          test -f remotectl-darwin-amd64 || (echo "missing darwin amd64" && exit 1)
-          test -f remotectl-darwin-arm64 || (echo "missing darwin arm64" && exit 1)
-          test -f remotectl-linux-amd64 || (echo "missing linux amd64" && exit 1)
-          test -f remotectl-linux-arm64 || (echo "missing linux arm64" && exit 1)
-
-          # macOS App (zip)
-          mkdir -p tmp_remotectl_app_macos
-          cp remotectl-darwin-amd64 tmp_remotectl_app_macos/remotectl
-          printf '%s\n' "RemoteCtl macOS App (single binary)" > tmp_remotectl_app_macos/README.txt
-          zip -r "remotectl-app-macos-${VER}.zip" tmp_remotectl_app_macos
-          rm -rf tmp_remotectl_app_macos
-
-          # Windows App (zip)
-          mkdir -p tmp_remotectl_app_windows
-          cp remotectl-windows-amd64.exe tmp_remotectl_app_windows/remotectl.exe
-          printf '%s\n' "RemoteCtl Windows App (single binary)" > tmp_remotectl_app_windows/README.txt
-          zip -r "remotectl-app-windows-amd64-${VER}.zip" tmp_remotectl_app_windows
-          rm -rf tmp_remotectl_app_windows
-
-          # Linux App (tar.gz)
-          mkdir -p tmp_remotectl_app_linux
-          cp remotectl-linux-amd64 tmp_remotectl_app_linux/remotectl
-          printf '%s\n' "RemoteCtl Linux App (single binary)" > tmp_remotectl_app_linux/README.txt
-          tar -czf "remotectl-app-linux-amd64-${VER}.tar.gz" -C tmp_remotectl_app_linux .
-          rm -rf tmp_remotectl_app_linux
-
-          # Agent (headless) — package linux amd64
-          mkdir -p tmp_agent_linux_amd64
-          cp remotectl-linux-amd64 tmp_agent_linux_amd64/remotectl-agent
-          if [ -f ../agent.yaml.example ]; then
-            cp ../agent.yaml.example tmp_agent_linux_amd64/agent.yaml.example
-          else
-            printf '%s\n' '# minimal agent.yaml example' 'server: "https://127.0.0.1:443"' 'token: "changeme"' > tmp_agent_linux_amd64/agent.yaml.example
-          fi
-          tar -czf "remotectl-agent-linux-amd64-${VER}.tar.gz" -C tmp_agent_linux_amd64 .
-          rm -rf tmp_agent_linux_amd64
-
-          # Server packages (linux amd64 + arm64) — include install.sh and server.yaml example
-          printf '%s\n' '#!/bin/bash' 'set -e' 'PREFIX=/opt/remotectl' 'mkdir -p "$PREFIX"' 'cp remotectl-server ./' '# This install script is intentionally minimal; please review and run as root if needed' > install.sh
-          chmod +x install.sh
-
-          mkdir -p tmp_server_amd64
-          cp remotectl-linux-amd64 tmp_server_amd64/remotectl-server
-          cp install.sh tmp_server_amd64/install.sh
-          if [ -f ../server.yaml.example ]; then
-            cp ../server.yaml.example tmp_server_amd64/server.yaml.example
-          else
-            printf '%s\n' '# server.yaml example' 'addr: ":443"' 'turn: {}' > tmp_server_amd64/server.yaml.example
-          fi
-          tar -czf "remotectl-server-linux-amd64-${VER}.tar.gz" -C tmp_server_amd64 .
-          rm -rf tmp_server_amd64
-
-          mkdir -p tmp_server_arm64
-          cp remotectl-linux-arm64 tmp_server_arm64/remotectl-server
-          cp install.sh tmp_server_arm64/install.sh
-          if [ -f ../server.yaml.example ]; then
-            cp ../server.yaml.example tmp_server_arm64/server.yaml.example
-          else
-            printf '%s\n' '# server.yaml example' 'addr: ":443"' 'turn: {}' > tmp_server_arm64/server.yaml.example
-          fi
-          tar -czf "remotectl-server-linux-arm64-${VER}.tar.gz" -C tmp_server_arm64 .
-          rm -rf tmp_server_arm64 install.sh
-
-      - name: Generate SHA256 checksums
+      - name: Build agent linux/amd64
         run: |
           set -e
-          cd build_output
-          VER="${VERSION}"
-          if [ -z "$VER" ]; then
-            VER="dev"
-          fi
-          sha256sum "remotectl-app-macos-${VER}.zip" \
-            "remotectl-app-windows-amd64-${VER}.zip" \
-            "remotectl-app-linux-amd64-${VER}.tar.gz" \
-            "remotectl-agent-linux-amd64-${VER}.tar.gz" \
-            "remotectl-server-linux-amd64-${VER}.tar.gz" \
-            "remotectl-server-linux-arm64-${VER}.tar.gz" \
-            > sha256sums.txt
+          cd agent
+          echo "Building agent linux/amd64"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../build_output/remotectl-agent-linux-amd64 .
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Install Flutter (for Linux app) and dependencies
+        uses: subosito/flutter-action@v2
         with:
-          files: |
-            build_output/remotectl-app-macos-${{ env.VERSION }}.zip
-            build_output/remotectl-app-windows-amd64-${{ env.VERSION }}.zip
-            build_output/remotectl-app-linux-amd64-${{ env.VERSION }}.tar.gz
-            build_output/remotectl-agent-linux-amd64-${{ env.VERSION }}.tar.gz
-            build_output/remotectl-server-linux-amd64-${{ env.VERSION }}.tar.gz
-            build_output/remotectl-server-linux-arm64-${{ env.VERSION }}.tar.gz
-            build_output/sha256sums.txt
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          flutter-version: stable
+
+      - name: Install linux desktop deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev liblzma-dev libatk1.0-dev libcairo2-dev libgdk-pixbuf2.0-dev libglu1-mesa-dev
+
+      - name: Build Flutter Linux desktop (app)
+        working-directory: app
+        run: |
+          set -e
+          flutter pub get
+          flutter build linux --release
+          # Flutter outputs Linux bundle at: build/linux/x64/release/bundle
+          mkdir -p ../build_output/app_linux_bundle
+          cp -r build/linux/x64/release/bundle/* ../build_output/app_linux_bundle/
+
+      - name: Package Linux App and artifacts
+        run: |
+          set -e
+          cd build_output
+          VER="${VERSION}"
+          if [ -z "$VER" ]; then VER="dev"; fi
+
+          # Package Linux desktop app (tar.gz)
+          if [ -d app_linux_bundle ]; then
+            tar -czf "remotectl-app-linux-amd64-${VER}.tar.gz" -C app_linux_bundle .
+            rm -rf app_linux_bundle
+          else
+            echo "Warning:
